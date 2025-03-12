@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Flappy Bird</title>
+        <style>
+            body {
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background-color: #f0f0f0;
+            }
+            canvas {
+                border: 1px solid #000;
+            }
+        </style>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body
+        class="bg-gray-900 text-white flex items-center justify-center h-screen"
+    >
+        <div class="flex flex-col items-center">
+            <canvas
+                id="gameCanvas"
+                width="288"
+                height="512"
+                class="border-4 border-yellow-400 shadow-lg"
+            ></canvas>
+            <button
+                onclick="toggleLeaderboard()"
+                class="mt-4 bg-yellow-500 hover:bg-yellow-600 text-black font-bold py-2 px-4 rounded"
+            >
+                Show Leaderboard
+            </button>
+        </div>
+
+        <div
+            id="leaderboardModal"
+            class="hidden fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center"
+        >
+            <div
+                class="bg-white text-black p-6 rounded-lg shadow-xl w-80 md:w-96"
+            >
+                <h2 class="text-xl font-bold mb-4 text-center">
+                    🏆 Leaderboard
+                </h2>
+                <p
+                    id="playerRank"
+                    class="text-center mb-2 text-lg font-semibold"
+                ></p>
+                <table class="w-full border-collapse border border-gray-400">
+                    <thead>
+                        <tr class="bg-yellow-500">
+                            <th class="border border-gray-400 p-2">Rank</th>
+                            <th class="border border-gray-400 p-2">Name</th>
+                            <th class="border border-gray-400 p-2">Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboardBody"></tbody>
+                </table>
+                <button
+                    onclick="toggleLeaderboard()"
+                    class="mt-4 w-full bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded"
+                >
+                    Close
+                </button>
+            </div>
+        </div>
+        <script>
+            let playerName = prompt("Enter your name:", "Player1") || "Player1";
+            let socket = new WebSocket("ws://localhost:8080/ws");
+
+            socket.onopen = function () {
+                console.log("Connected to WebSocket server");
+            };
+
+            socket.onmessage = function (event) {
+                const data = JSON.parse(event.data);
+                console.log("Leaderboard Data:", data);
+
+                document.getElementById("playerRank").innerText =
+                    `Your Rank: ${data.rank} / ${data.total}`;
+
+                let leaderboardHTML = "";
+                data.leaderboard.forEach((p, i) => {
+                    leaderboardHTML += `
+                    <tr class="${i === 0 ? "bg-yellow-300" : ""}">
+                        <td class="border border-gray-400 p-2 text-center">${i + 1}</td>
+                        <td class="border border-gray-400 p-2 text-center">${p.name}</td>
+                        <td class="border border-gray-400 p-2 text-center">${p.score}</td>
+                    </tr>
+                `;
+                });
+
+                document.getElementById("leaderboardBody").innerHTML =
+                    leaderboardHTML;
+            };
+
+            socket.onerror = function (error) {
+                console.error("WebSocket Error:", error);
+            };
+
+            function toggleLeaderboard() {
+                let modal = document.getElementById("leaderboardModal");
+                modal.classList.toggle("hidden");
+            }
+        </script>
+
+        <script>
+            const SCREENWIDTH = 288;
+            const SCREENHEIGHT = 512;
+            const PIPE_GAP_SIZE = 100;
+            const FPS = 60;
+            const BASE_Y = SCREENHEIGHT * 0.79;
+
+            let canvas = document.getElementById("gameCanvas");
+            let ctx = canvas.getContext("2d");
+            let frames = 0;
+            let score = 0;
+            let isGameRunning = false;
+            let isAddPipe = true;
+
+            const sounds = {
+                die: new Audio("resources/audios/die.wav"),
+                hit: new Audio("resources/audios/hit.wav"),
+                point: new Audio("resources/audios/point.wav"),
+                swoosh: new Audio("resources/audios/swoosh.wav"),
+                wing: new Audio("resources/audios/wing.wav"),
+            };
+
+            const images = {};
+            const numberImages = {};
+            const birdImages = {
+                red: {},
+                blue: {},
+                yellow: {},
+            };
+
+            function loadImages() {
+                return new Promise((resolve) => {
+                    let loadedCount = 0;
+                    const totalImages = 25;
+
+                    for (let i = 0; i <= 9; i++) {
+                        numberImages[i] = new Image();
+                        numberImages[i].onload = imageLoaded;
+                        numberImages[i].src = `resources/images/${i}.png`;
+                    }
+
+                    const birdColors = ["red", "blue", "yellow"];
+                    const birdStates = ["up", "mid", "down"];
+
+                    birdColors.forEach((color) => {
+                        birdStates.forEach((state) => {
+                            birdImages[color][state] = new Image();
+                            birdImages[color][state].onload = imageLoaded;
+                            birdImages[color][state].src =
+                                `resources/images/${color}bird-${state}flap.png`;
+                        });
+                    });
+
+                    images.pipeGreen = new Image();
+                    images.pipeGreen.onload = imageLoaded;
+                    images.pipeGreen.src = "resources/images/pipe-green.png";
+
+                    images.pipeRed = new Image();
+                    images.pipeRed.onload = imageLoaded;
+                    images.pipeRed.src = "resources/images/pipe-red.png";
+
+                    images.backgroundDay = new Image();
+                    images.backgroundDay.onload = imageLoaded;
+                    images.backgroundDay.src =
+                        "resources/images/background-day.png";
+
+                    images.backgroundNight = new Image();
+                    images.backgroundNight.onload = imageLoaded;
+                    images.backgroundNight.src =
+                        "resources/images/background-night.png";
+
+                    images.base = new Image();
+                    images.base.onload = imageLoaded;
+                    images.base.src = "resources/images/base.png";
+
+                    images.gameover = new Image();
+                    images.gameover.onload = imageLoaded;
+                    images.gameover.src = "resources/images/gameover.png";
+
+                    images.message = new Image();
+                    images.message.onload = imageLoaded;
+                    images.message.src = "resources/images/message.png";
+
+                    function imageLoaded() {
+                        loadedCount++;
+                        if (loadedCount === totalImages) {
+                            resolve();
+                        }
+                    }
+                });
+            }
+
+            class Bird {
+                constructor(x, y, color = "red") {
+                    this.x = x;
+                    this.y = y;
+                    this.width = birdImages[color].mid.width;
+                    this.height = birdImages[color].mid.height;
+                    this.color = color;
+                    this.frameIndex = 0;
+                    this.frameCount = 0;
+                    this.frameCycle = [0, 1, 2, 1];
+                    this.frameImages = ["up", "mid", "down"];
+                    this.isFlapped = false;
+                    this.downSpeed = 0;
+                    this.upSpeed = 9;
+                    this.rotation = 0;
+                }
+
+                update(dt) {
+                    this.frameCount++;
+                    if (this.frameCount % 5 === 0) {
+                        this.frameIndex =
+                            (this.frameIndex + 1) % this.frameCycle.length;
+                        this.frameCount = 0;
+                    }
+
+                    if (this.isFlapped) {
+                        this.upSpeed -= 60 * dt;
+                        this.y -= this.upSpeed;
+
+                        if (this.upSpeed <= 0) {
+                            this.isFlapped = false;
+                            this.upSpeed = 9;
+                            this.downSpeed = 0;
+                        }
+                    } else {
+                        this.downSpeed += 40 * dt;
+                        this.y += this.downSpeed;
+                    }
+
+                    if (this.downSpeed > 10) {
+                        this.rotation = Math.min(90, this.rotation + 3);
+                    } else if (this.isFlapped) {
+                        this.rotation = -20;
+                    }
+
+                    let isDead = false;
+                    if (this.y + this.height > BASE_Y) {
+                        isDead = true;
+                        this.upSpeed = 0;
+                        this.downSpeed = 0;
+                        this.y = BASE_Y - this.height;
+                    }
+                    if (this.y < 0) {
+                        isDead = true;
+                        this.upSpeed = 0;
+                        this.downSpeed = 0;
+                        this.y = 0;
+                    }
+
+                    return isDead;
+                }
+
+                flap() {
+                    if (this.isFlapped) {
+                        this.upSpeed = Math.max(12, this.upSpeed + 1);
+                    } else {
+                        this.isFlapped = true;
+                    }
+                }
+
+                draw() {
+                    ctx.save();
+
+                    ctx.translate(
+                        this.x + this.width / 2,
+                        this.y + this.height / 2,
+                    );
+                    ctx.rotate((this.rotation * Math.PI) / 180);
+
+                    const frameState =
+                        this.frameImages[this.frameCycle[this.frameIndex]];
+                    ctx.drawImage(
+                        birdImages[this.color][frameState],
+                        -this.width / 2,
+                        -this.height / 2,
+                        this.width,
+                        this.height,
+                    );
+
+                    ctx.restore();
+                }
+
+                getCollisionRect() {
+                    return {
+                        x: this.x,
+                        y: this.y,
+                        width: this.width,
+                        height: this.height,
+                    };
+                }
+            }
+
+            class Pipe {
+                constructor(x, y, type, image) {
+                    this.x = x;
+                    this.y = y;
+                    this.width = image.width;
+                    this.height = image.height;
+                    this.type = type;
+                    this.image = image;
+                    this.usedForScore = false;
+                }
+
+                update() {
+                    this.x -= 4;
+                }
+
+                draw() {
+                    ctx.drawImage(
+                        this.image,
+                        this.x,
+                        this.y,
+                        this.width,
+                        this.height,
+                    );
+                }
+
+                getCollisionRect() {
+                    return {
+                        x: this.x,
+                        y: this.y,
+                        width: this.width,
+                        height: this.height,
+                    };
+                }
+
+                static randomPipe(pipeImage) {
+                    const upY =
+                        Math.floor(BASE_Y * 0.2) +
+                        Math.floor(
+                            Math.random() * (BASE_Y * 0.6 - PIPE_GAP_SIZE),
+                        );
+
+                    return {
+                        top: { x: SCREENWIDTH + 10, y: upY - pipeImage.height },
+                        bottom: { x: SCREENWIDTH + 10, y: upY + PIPE_GAP_SIZE },
+                    };
+                }
+            }
+
+            function checkCollision(rect1, rect2) {
+                return (
+                    rect1.x < rect2.x + rect2.width &&
+                    rect1.x + rect1.width > rect2.x &&
+                    rect1.y < rect2.y + rect2.height &&
+                    rect1.y + rect1.height > rect2.y
+                );
+            }
+
+            function showScore() {
+                const scoreStr = Math.floor(score).toString();
+                let width = 0;
+
+                for (let i = 0; i < scoreStr.length; i++) {
+                    const digit = scoreStr[i];
+                    if (numberImages[digit]) {
+                        width += numberImages[digit].width;
+                    } else {
+                        console.error(`Image for digit ${digit} not found!`);
+                    }
+                }
+
+                let xOffset = (SCREENWIDTH - width) / 2;
+
+                for (let i = 0; i < scoreStr.length; i++) {
+                    const digit = scoreStr[i];
+                    if (numberImages[digit]) {
+                        ctx.drawImage(
+                            numberImages[digit],
+                            xOffset,
+                            SCREENHEIGHT * 0.1,
+                        );
+                        xOffset += numberImages[digit].width;
+                    } else {
+                        console.error(`Image for digit ${digit} not found!`);
+                    }
+                }
+            }
+
+            function startGame() {
+                return new Promise((resolve) => {
+                    let basePos = [0, BASE_Y];
+                    const baseDiffBg =
+                        images.base.width - images.backgroundDay.width;
+                    const msgPos = [
+                        (SCREENWIDTH - images.message.width) / 2,
+                        SCREENHEIGHT * 0.12,
+                    ];
+
+                    let birdIdx = 0;
+                    let birdIdxChangeCount = 0;
+                    let birdIdxCycle = [0, 1, 2, 1];
+                    let currentBirdCycleIndex = 0;
+                    let birdPos = [
+                        SCREENWIDTH * 0.2,
+                        (SCREENHEIGHT - birdImages.red.mid.height) / 2,
+                    ];
+                    let birdYShiftCount = 0;
+                    let birdYShiftMax = 9;
+                    let shift = 1;
+
+                    const backgrounds = [
+                        images.backgroundDay,
+                        images.backgroundNight,
+                    ];
+                    const background =
+                        backgrounds[
+                            Math.floor(Math.random() * backgrounds.length)
+                        ];
+
+                    const birdColors = ["red", "blue", "yellow"];
+                    const birdColor =
+                        birdColors[
+                            Math.floor(Math.random() * birdColors.length)
+                        ];
+
+                    const pipes = [images.pipeGreen, images.pipeRed];
+                    const pipe =
+                        pipes[Math.floor(Math.random() * pipes.length)];
+
+                    function animate() {
+                        birdIdxChangeCount++;
+                        if (birdIdxChangeCount % 5 === 0) {
+                            currentBirdCycleIndex =
+                                (currentBirdCycleIndex + 1) %
+                                birdIdxCycle.length;
+                            birdIdx = birdIdxCycle[currentBirdCycleIndex];
+                            birdIdxChangeCount = 0;
+                        }
+
+                        basePos[0] = -((-basePos[0] + 4) % baseDiffBg);
+
+                        birdYShiftCount++;
+                        if (birdYShiftCount === birdYShiftMax) {
+                            birdYShiftMax = 16;
+                            shift = -shift;
+                            birdYShiftCount = 0;
+                        }
+                        birdPos[1] += shift;
+
+                        ctx.drawImage(background, 0, 0);
+                        ctx.drawImage(
+                            birdImages[birdColor][
+                                Object.keys(birdImages[birdColor])[birdIdx]
+                            ],
+                            birdPos[0],
+                            birdPos[1],
+                        );
+                        ctx.drawImage(images.message, msgPos[0], msgPos[1]);
+                        ctx.drawImage(images.base, basePos[0], basePos[1]);
+
+                        if (!isGameRunning) {
+                            requestAnimationFrame(animate);
+                        } else {
+                            resolve({
+                                birdPos,
+                                basePos,
+                                birdIdx,
+                                background,
+                                birdColor,
+                                pipe,
+                            });
+                        }
+                    }
+
+                    animate();
+
+                    function handleStart(e) {
+                        if (e.code === "Space" || e.code === "ArrowUp") {
+                            sounds.wing.play();
+                            isGameRunning = true;
+                            document.removeEventListener(
+                                "keydown",
+                                handleStart,
+                            );
+                        }
+                    }
+
+                    document.addEventListener("keydown", handleStart);
+                });
+            }
+
+            async function gameLoop(gameStartInfo) {
+                const { birdPos, basePos, background, birdColor, pipe } =
+                    gameStartInfo;
+                const baseDiffBg = images.base.width - background.width;
+
+                const bird = new Bird(birdPos[0], birdPos[1], birdColor);
+
+                const pipes = [];
+                const pipeTopImg = pipe;
+                const pipeBottomImg = pipe;
+
+                for (let i = 0; i < 2; i++) {
+                    const pipePos = Pipe.randomPipe(pipeTopImg);
+                    pipes.push(
+                        new Pipe(
+                            SCREENWIDTH + 200 + (i * SCREENWIDTH) / 2,
+                            pipePos.top.y,
+                            "top",
+                            pipeTopImg,
+                        ),
+                    );
+                    pipes.push(
+                        new Pipe(
+                            SCREENWIDTH + 200 + (i * SCREENWIDTH) / 2,
+                            pipePos.bottom.y,
+                            "bottom",
+                            pipeBottomImg,
+                        ),
+                    );
+                }
+
+                score = 0;
+                isGameRunning = true;
+                isAddPipe = true;
+
+                let lastTime = performance.now();
+
+                function update() {
+                    const currentTime = performance.now();
+                    const deltaTime = (currentTime - lastTime) / 1000;
+                    lastTime = currentTime;
+
+                    if (!isGameRunning) {
+                        endGame(bird, pipes, basePos, background);
+                        return;
+                    }
+
+                    const isDead = bird.update(deltaTime);
+                    if (isDead) {
+                        sounds.hit.play();
+                        isGameRunning = false;
+                        update();
+                        return;
+                    }
+
+                    for (let i = pipes.length - 1; i >= 0; i--) {
+                        const pipe = pipes[i];
+                        pipe.update();
+
+                        if (
+                            checkCollision(
+                                bird.getCollisionRect(),
+                                pipe.getCollisionRect(),
+                            )
+                        ) {
+                            sounds.hit.play();
+                            isGameRunning = false;
+                            update();
+                            return;
+                        }
+
+                        if (
+                            pipe.type === "top" &&
+                            pipe.x + pipe.width < bird.x &&
+                            !pipe.usedForScore
+                        ) {
+                            pipe.usedForScore = true;
+                            score += 1;
+                            sounds.point.play();
+                        }
+
+                        if (
+                            pipe.x < 5 &&
+                            pipe.x > 0 &&
+                            isAddPipe &&
+                            pipe.type === "top"
+                        ) {
+                            const pipePos = Pipe.randomPipe(pipeTopImg);
+                            pipes.push(
+                                new Pipe(
+                                    pipePos.top.x,
+                                    pipePos.top.y,
+                                    "top",
+                                    pipeTopImg,
+                                ),
+                            );
+                            pipes.push(
+                                new Pipe(
+                                    pipePos.bottom.x,
+                                    pipePos.bottom.y,
+                                    "bottom",
+                                    pipeBottomImg,
+                                ),
+                            );
+                            isAddPipe = false;
+                        }
+
+                        if (pipe.x + pipe.width < 0) {
+                            pipes.splice(i, 1);
+                            isAddPipe = true;
+                        }
+                    }
+
+                    ctx.drawImage(background, 0, 0);
+                    for (const pipe of pipes) {
+                        pipe.draw(ctx, pipe.type === "top");
+                    }
+                    ctx.drawImage(images.base, basePos[0], basePos[1]);
+                    showScore();
+                    bird.draw(ctx);
+
+                    requestAnimationFrame(update);
+                }
+
+                function handleFlap(e) {
+                    if (
+                        (e.code === "Space" || e.code === "ArrowUp") &&
+                        isGameRunning
+                    ) {
+                        bird.flap();
+                        sounds.wing.play();
+                    }
+                }
+
+                document.addEventListener("keydown", handleFlap);
+
+                update();
+            }
+
+            function endGame(bird, pipes, basePos, background) {
+                sounds.die.play();
+
+                function update() {
+                    const isDead = bird.update(1 / 60);
+
+                    ctx.drawImage(background, 0, 0);
+
+                    for (const pipe of pipes) {
+                        ctx.save();
+                        if (pipe.type === "top") {
+                            ctx.translate(
+                                pipe.x + pipe.width / 2,
+                                pipe.y + pipe.height / 2,
+                            );
+                            ctx.scale(1, -1);
+                            ctx.drawImage(
+                                pipe.image,
+                                -pipe.width / 2,
+                                -pipe.height / 2,
+                                pipe.width,
+                                pipe.height,
+                            );
+                        } else {
+                            pipe.draw();
+                        }
+                        ctx.restore();
+                    }
+
+                    ctx.drawImage(images.base, basePos[0], basePos[1]);
+                    showScore();
+                    bird.draw();
+
+                    if (bird.y + bird.height >= BASE_Y) {
+                        ctx.drawImage(
+                            images.gameover,
+                            (SCREENWIDTH - images.gameover.width) / 2,
+                            SCREENHEIGHT * 0.4,
+                        );
+
+                        const playerData = {
+                            name: playerName,
+                            score: Math.floor(score),
+                        };
+                        socket.send(JSON.stringify(playerData));
+
+                        document.addEventListener("keydown", restartGame);
+                        return;
+                    }
+
+                    requestAnimationFrame(update);
+                }
+
+                function restartGame(e) {
+                    if (e.code === "Space" || e.code === "ArrowUp") {
+                        document.removeEventListener("keydown", restartGame);
+
+                        isGameRunning = false;
+                        init();
+                    }
+                }
+
+                update();
+            }
+
+            async function init() {
+                try {
+                    await loadImages();
+                    const gameStartInfo = await startGame();
+                    gameLoop(gameStartInfo);
+                } catch (error) {
+                    console.error("Error initializing game:", error);
+                }
+            }
+
+            init();
+        </script>
+    </body>
+</html>
